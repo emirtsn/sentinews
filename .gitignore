@@ -1,0 +1,37 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# --- Environment / Secrets ---
+.env
+.env.local
+.env.*.local
+
+# --- Database / Docker ---
+# Docker volume klasörü
+pgdata/
+postgres_data/
+
+# --- IDEs / Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Operating System ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/

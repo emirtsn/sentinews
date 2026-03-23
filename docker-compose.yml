@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine # Hafif ve stabil versiyon
+    container_name: sentinews_db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123 # Gerçek projede bunu gizli tutarız
+      POSTGRES_DB: sentinews_db
+    ports:
+      - "5432:5432" # Bilgisayarındaki 5432 portunu Docker'daki 5432'ye bağlar
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Veriler uçup gitmesin diye yedekleme alanı
+
+volumes:
+  postgres_data:
