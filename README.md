@@ -20,9 +20,10 @@
 
 ## 📸 Screenshots
 
-![genel](assets/screenshots/genel.png)
-![özel](assets/screenshots/özel.png)
-![tercih](assets/screenshots/tercih.png)
+<img width="1920" height="843" alt="tercih" src="https://github.com/user-attachments/assets/17e36e3e-e38f-4020-9a43-1cb8804aaffd" />
+<img width="1920" height="843" alt="özel" src="https://github.com/user-attachments/assets/95631e3e-9c61-4562-92b2-9c780a1d0c7c" />
+<img width="1920" height="843" alt="genel" src="https://github.com/user-attachments/assets/9aa2c760-14c9-447a-8fde-0b8c9495279d" />
+
 
 
 --- 
