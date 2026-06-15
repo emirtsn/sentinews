@@ -17,6 +17,17 @@
 
 ---
 
+
+## 📸 Screenshots
+
+![genel](assets/screenshots/genel.png)
+![özel](assets/screenshots/özel.png)
+![tercih](assets/screenshots/tercih.png)
+
+
+--- 
+
+
 ## 🏗️ Architecture
 
 ```
