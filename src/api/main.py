@@ -1,37 +1,67 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
-from fastapi.middleware.cors import CORSMiddleware
-from src.models import models 
-from pydantic import BaseModel, EmailStr
 from typing import List, Optional
-
-from src.auth.security import get_password_hash 
-from fastapi import HTTPException, Depends
+from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
 from jose import jwt, JWTError
 from fastapi.security import OAuth2PasswordRequestForm
-from src.auth.security import verify_password, create_access_token
-from src.auth.security import SECRET_KEY, ALGORITHM, oauth2_scheme
-from jose import jwt, JWTError
 
-# Kendi modellerimizi ve veritabanı ayarlarımızı içeri aktarıyoruz
-from src.models.models import SessionLocal, News, User, engine, Base
+from src.auth.security import (
+    get_password_hash,
+    verify_password,
+    create_access_token,
+    SECRET_KEY,
+    ALGORITHM,
+    oauth2_scheme,
+)
+from src.models.models import (
+    SessionLocal, News, User, UserInteraction,
+    InteractionType, engine, Base,
+)
+from src.recommender import get_hybrid_recommendations
 
 from dotenv import load_dotenv
 load_dotenv()
 
-# Kullanıcı kayıt olurken gelecek veri yapısı
+
+# ---------------------------------------------------------------------------
+# Pydantic şemaları
+# ---------------------------------------------------------------------------
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
 
-# Giriş sonrası dönecek token yapısı
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+class InteractionLog(BaseModel):
+    news_id: int
+    interaction_type: InteractionType
 
+class NewsResponse(BaseModel):
+    id: int
+    title: str
+    summary: Optional[str] = None
+    content: Optional[str] = None
+    source: Optional[str] = None
+    url: str
+    category: Optional[str] = None
+    sentiment_score: Optional[float] = None
+    published_at: Optional[datetime] = None   # datetime — str değil
+
+    class Config:
+        from_attributes = True
+
+class PreferencesUpdate(BaseModel):
+    preferences: List[str]
+
+
+# ---------------------------------------------------------------------------
+# Uygulama
+# ---------------------------------------------------------------------------
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="SentiNews API")
@@ -44,6 +74,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+VALID_CATEGORIES = {"Technology", "Business", "Sports", "Science", "Health", "Entertainment"}
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -51,92 +84,136 @@ def get_db():
     finally:
         db.close()
 
+
+# ---------------------------------------------------------------------------
+# Genel endpointler
+# ---------------------------------------------------------------------------
 @app.get("/")
 def read_root():
     return {"message": "SentiNews Backend Çalışıyor!"}
 
-@app.get("/news")
+
+@app.get("/news", response_model=List[NewsResponse])
 def get_all_news(db: Session = Depends(get_db)):
-    """
-    Veritabanındaki tüm haberleri listeleyen endpoint.
-    """
-    news_list = db.query(News).all()
-    return news_list
+    return db.query(News).order_by(News.published_at.desc()).all()
 
 
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
 @app.post("/auth/register", response_model=Token)
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    # 1. Kullanıcı zaten var mı kontrol et
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if db_user:
+    if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Bu e-posta zaten kayıtlı.")
-    
-    # 2. Şifreyi hashle ve yeni kullanıcıyı oluştur
-    hashed_pass = get_password_hash(user.password)
+
     new_user = User(
         email=user.email,
-        hashed_password=hashed_pass,
+        hashed_password=get_password_hash(user.password),
         full_name=user.full_name,
-        preferences=[] # Başlangıçta boş ilgi alanı
+        preferences=[],
     )
-    
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
-    # 3. Kayıt sonrası hemen bir token üretip dönelim
-    access_token = create_access_token(data={"sub": new_user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
 
+    return {"access_token": create_access_token({"sub": new_user.email}), "token_type": "bearer"}
 
 
 @app.post("/auth/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # 1. Kullanıcıyı bul
     user = db.query(User).filter(User.email == form_data.username).first()
-    
-    # 2. Kullanıcı yoksa veya şifre yanlışsa hata ver
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Hatalı e-posta veya şifre.")
-    
-    # 3. Giriş başarılı, token'ı ver
-    access_token = create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    return {"access_token": create_access_token({"sub": user.email}), "token_type": "bearer"}
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
-        # Kullanıcının getirdiği bileti (token) senin gizli anahtarınla açıyoruz
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise HTTPException(status_code=401, detail="Geçersiz kimlik.")
     except JWTError:
         raise HTTPException(status_code=401, detail="Oturum süresi dolmuş.")
-    
+
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
     return user
 
 
-@app.get("/news/me")
-def get_my_personalized_news(
-    current_user: User = Depends(get_current_user), 
-    db: Session = Depends(get_db)
+# ---------------------------------------------------------------------------
+# Kullanıcı bilgisi
+# ---------------------------------------------------------------------------
+@app.get("/users/me")
+def get_me(current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "preferences": current_user.preferences or [],
+    }
+
+
+@app.get("/users/me/preferences")
+def get_preferences(current_user: User = Depends(get_current_user)):
+    return {"preferences": current_user.preferences or []}
+
+
+@app.put("/users/me/preferences")
+def update_preferences(
+    body: PreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    # 1. Kullanıcının ilgi alanlarını alıyoruz (JSON formatında sakladığımız liste)
-    user_prefs = current_user.preferences 
-    
-    # 2. Eğer kullanıcı henüz tercih seçmemişse, genel bir haber akışı dönelim
-    if not user_prefs:
-        return db.query(News).order_by(News.published_at.desc()).limit(10).all()
-    
-    # 3. Tercih edilen kategorileri filtrele + Keşif için birkaç tane de farklı kategoriden ekle
-    # (Sadece sevdiklerini değil, yeni şeyler de görmesini sağlıyoruz)
-    personalized_list = db.query(News).filter(News.category.in_(user_prefs)).limit(15).all()
-    
-    # Keşif (Variety) için rastgele haberler ekleme
-    random_discovery = db.query(News).filter(~News.category.in_(user_prefs)).limit(5).all()
-    
-    return personalized_list + random_discovery
+    clean = [p for p in body.preferences if p in VALID_CATEGORIES]
+    current_user.preferences = clean
+    db.commit()
+    return {"preferences": clean}
+
+
+# ---------------------------------------------------------------------------
+# Kişiselleştirilmiş haber akışı
+# ---------------------------------------------------------------------------
+@app.get("/news/me", response_model=List[NewsResponse])
+def get_my_personalized_news(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return get_hybrid_recommendations(
+        user_id=current_user.id,
+        user_prefs=current_user.preferences or [],
+        db=db,
+        limit=50,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Etkileşim kaydı
+# ---------------------------------------------------------------------------
+@app.post("/log-interaction", status_code=201)
+def log_interaction(
+    body: InteractionLog,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not db.query(News).filter(News.id == body.news_id).first():
+        raise HTTPException(status_code=404, detail="Haber bulunamadı.")
+
+    db.add(UserInteraction(
+        user_id=current_user.id,
+        news_id=body.news_id,
+        interaction_type=body.interaction_type,
+    ))
+    db.commit()
+
+    return {"status": "ok", "interaction_type": body.interaction_type, "news_id": body.news_id}
+
+
+# ---------------------------------------------------------------------------
+# Debug
+# ---------------------------------------------------------------------------
+@app.get("/debug/me")
+def debug_me(current_user: User = Depends(get_current_user)):
+    return {"id": current_user.id, "email": current_user.email}
